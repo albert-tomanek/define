@@ -10,7 +10,7 @@ use std::{fs, env};
 use reqwest;
 use serde_json::{Value};
 use itertools::Itertools;   // for join on iterators
-use colored::Colorize;      // for coloured output
+use colored::{Colorize, ColoredString};      // for coloured output
 
 const WIDTH: usize = 79;
 
@@ -22,56 +22,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>
         None => panic!("Please pass a word to define."),
     };
 
-    let key = match fs::read_to_string("api_key")
+    let (key_dict, key_thes) = match fs::read_to_string("api_key")
     {
         Ok(str) =>
-            match str.split('\n').next()
+            match str.split('\n').collect_tuple::<(&str, &str)>()
             {
-                Some(line) => String::from(line),
-                None => panic!("Empty key file."),
+                Some(lines) => (String::from(lines.0), String::from(lines.1)),
+                None => panic!("Key file must contain 2 keys."),
             },
         Err(e) => panic!("Could not read api key file: {}", e),
     };
 
-    let url = format!("https://www.dictionaryapi.com/api/v3/references/collegiate/json/{}?key={}", word, key);
+    // let url = format!("https://www.dictionaryapi.com/api/v3/references/collegiate/json/{}?key={}", word, key_dict);
+    let url = format!("https://www.dictionaryapi.com/api/v3/references/thesaurus/json/{}?key={}", word, key_thes);
 
     let resp = reqwest::get(url)
         .await?.json::<Value>().await?;
 
-    let defs: Vec<Value> = match resp {
+    let homonyms: Vec<Value> = match resp {
         Value::Array(v) => v,
         _ => panic!("Malformed respose."),
     };
 
-    if defs.len() == 0 {
+    if homonyms.len() == 0 {
         println!("No definition for `{}`.", word);
     }
-    else if defs[0].is_string() {
+    else if homonyms[0].is_string() {
         println!("No definition for `{}`.", word);
         println!("Did you mean...\n\n\t{}\n\n?",
             wrap_text(
-                &defs.iter().map(|val| val.as_str().unwrap()).join(", "),
+                &homonyms.iter().map(|val| val.as_str().unwrap()).join(", "),
                 WIDTH - 8
             ).join("\n\t")
         );
     }
     else {
         print!("\n");
-        for (i, def) in defs.iter().enumerate() {
-            print!("  {}.\t{}\n", i + 1, def["fl"].as_str().unwrap().bright_purple().italic());
+        for (i, hom) in homonyms.iter().enumerate() {
+            print!("  {}.\t{}\n", i + 1, hom["fl"].as_str().unwrap().bright_purple().italic());
 
-            for (j, expl) in def["shortdef"].as_array().unwrap().iter().enumerate() {
-                /*if j == 0 {
-                    print!("{}\n", wrap_text(
-                        expl.as_str().unwrap(),
-                        WIDTH - 8
-                    ).join("\n\t"));
-                }
-                else*/ {
-                    print!("      -\t{}\n", wrap_text(
-                        expl.as_str().unwrap(),
-                        WIDTH - 8
-                    ).join("\n\t"));
+            for (j, def) in hom["def"][0]["sseq"].as_array().expect("Incomplete JSON").iter().enumerate() {
+                print!("      -\t{}\n", process_markup(wrap_text(
+                    def[0][1]["dt"][0][1].as_str().expect("Bad JSON"),
+                    WIDTH - 8
+                ).join("\n\t")));
+
+                if def[0][1]["dt"][1][1][0]["t"].is_string() {
+                    println!("\t{}", format!("“{}”", 
+                        process_markup(wrap_text(
+                            def[0][1]["dt"][1][1][0]["t"].as_str().unwrap(),
+                            WIDTH - 8
+                        ).join("\n\t")))
+                        .truecolor(0x80, 0x80, 0x80)
+                    );
                 }
             }
 
@@ -95,6 +98,36 @@ fn wrap_text(text: &str, width: usize) -> Vec<String>
 
         out.last_mut().unwrap().push_str(word);
         out.last_mut().unwrap().push(' ');
+    }
+
+    out.last_mut().unwrap().pop();
+
+    return out;
+}
+
+fn process_markup(text: String) -> String
+{
+    // Only supports {it} tags
+
+    let mut out = String::new();
+
+    let mut old_start: usize = 0;
+    let mut new_start: usize;
+
+    loop {
+        // Push normal until we reach an opening token
+        out = format!("{}{}", out, match text[old_start..].find("{it}") {
+            Some(idx) => { new_start = old_start + idx + 4; &text[old_start..old_start+idx] },
+            None => { out.push_str(&text[old_start..]); break; },
+        });
+        old_start = new_start;
+
+        // Push italic until we reach a closing token
+        out = format!("{}{}", out, (match text[old_start..].find("{/it}") {
+            Some(idx) => { new_start = old_start + idx + 5; &text[old_start..old_start+idx] },
+            None => &text[old_start..],
+        }).italic());
+        old_start = new_start;
     }
 
     return out;
