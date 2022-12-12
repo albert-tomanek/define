@@ -12,26 +12,25 @@ use serde_json::{Value};
 use itertools::Itertools;   // for join on iterators
 use colored::{Colorize, ColoredString};      // for coloured output
 
+mod levenshtein;
+
 const WIDTH: usize = 79;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>>
 {
-    let word = match env::args().skip(1).next() {
-        Some(s) => s,
-        None => panic!("Please pass a word to define."),
-    };
+    let word = env::args().skip(1).next().expect("Please pass a word to define.");
 
-    let (key_dict, key_thes) = match fs::read_to_string("api_key")
+    let (key_dict, key_thes) = /*match fs::read_to_string("api_key")
     {
-        Ok(str) =>
-            match str.split('\n').collect_tuple::<(&str, &str)>()
+        Ok(str) =>*/
+            match /*str*/include_str!("../api_key").split('\n').collect_tuple::<(&str, &str)>()
             {
                 Some(lines) => (String::from(lines.0), String::from(lines.1)),
                 None => panic!("Key file must contain 2 keys."),
-            },
+            }/*,
         Err(e) => panic!("Could not read api key file: {}", e),
-    };
+    }*/;
 
     // let url = format!("https://www.dictionaryapi.com/api/v3/references/collegiate/json/{}?key={}", word, key_dict);
     let url = format!("https://www.dictionaryapi.com/api/v3/references/thesaurus/json/{}?key={}", word, key_thes);
@@ -51,7 +50,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>
         println!("No definition for `{}`.", word);
         println!("Did you mean...\n\n\t{}\n\n?",
             wrap_text(
-                &homonyms.iter().map(|val| val.as_str().unwrap()).join(", "),
+                &homonyms.iter()
+                    .map(|val| val.as_str().unwrap())
+                    .map(|found| {
+                        let (distance, diff_a) = levenshtein::distance(found, word.as_str());
+                        highlight_chars(found, diff_a)
+                    })
+                    .join(", "),
                 WIDTH - 8
             ).join("\n\t")
         );
@@ -68,7 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>
                 ).join("\n\t")));
 
                 if def[0][1]["dt"][1][1][0]["t"].is_string() {
-                    println!("\t{}", format!("“{}”", 
+                    println!("\t{}", format!("“{}”",
                         process_markup(wrap_text(
                             def[0][1]["dt"][1][1][0]["t"].as_str().unwrap(),
                             WIDTH - 8
@@ -131,4 +136,19 @@ fn process_markup(text: String) -> String
     }
 
     return out;
+}
+
+fn highlight_chars(text: &str, bitmap: Vec<bool>) -> String
+{
+    let mut out = String::new();
+
+    for (c, bold) in std::iter::zip(text.chars(), bitmap.iter())
+    {
+        out = format!("{}{}", out, match bold {
+            true  => c.to_string().bold(),
+            false => c.to_string().bold(),
+        });
+    }
+
+    out
 }
